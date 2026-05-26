@@ -1,0 +1,59 @@
+name: Terraform Validate
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+
+jobs:
+  validate:
+    name: fmt + validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+
+      # ── Format check ────────────────────────────────────────────────────────
+      - name: terraform fmt check
+        run: terraform fmt -check -recursive infra/terraform/
+        # Fails if any .tf file is not correctly formatted.
+        # Run `terraform fmt -recursive infra/terraform/` locally to fix.
+
+      # ── Validate each module ─────────────────────────────────────────────────
+      # terraform validate requires an init (even with -backend=false) to
+      # download provider schemas used for type checking.
+
+      - name: Init + validate — apim-shared-policy-fragments
+        working-directory: infra/terraform/modules/apim-shared-policy-fragments
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Init + validate — apim-diagnostics
+        working-directory: infra/terraform/modules/apim-diagnostics
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Init + validate — apim-mcp-from-rest
+        working-directory: infra/terraform/modules/apim-mcp-from-rest
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Init + validate — apim-mcp-from-existing
+        working-directory: infra/terraform/modules/apim-mcp-from-existing
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Init + validate — envs/dev
+        working-directory: infra/terraform/envs/dev
+        run: |
+          terraform init -backend=false
+          terraform validate

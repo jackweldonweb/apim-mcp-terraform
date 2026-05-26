@@ -35,7 +35,9 @@ sample_rest_api_url = "https://sample-rest-api.internal.example.com"
 # If blank, defaults to <sample_rest_api_url>/openapi/v1.json
 sample_rest_api_openapi_url = ""
 
-# Key Vault secret ID for the backend API key (use "" if the backend needs no key)
+# Key Vault secret ID for the backend API key.
+# A real secret ID is required — the module always creates a KV-backed named value.
+# Create a placeholder secret in Key Vault if your backend does not use a credential.
 sample_rest_api_credential_secret_id = "https://<vault>.vault.azure.net/secrets/sample-rest-api-key"
 
 # ── Pattern 2: Govern existing MCP server ─────────────────────────────────────

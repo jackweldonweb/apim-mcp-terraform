@@ -1,225 +1,244 @@
 # apim-mcp-reference
 
-Production-ready reference implementation for exposing REST APIs as MCP servers through Azure API Management.  Demonstrates two complementary patterns side by side, with full Entra JWT validation, rate limiting, quota enforcement, custom metrics, and structured error handling.
-
-> **Target audience:** Enterprise Azure architects evaluating MCP gateway patterns on existing APIM Premium instances.
+Production-ready reference implementation for exposing REST APIs and existing MCP servers through Azure API Management as governed Model Context Protocol endpoints. Built for enterprise architects who need Entra authentication, rate limiting, quota, credential abstraction, and streaming-safe diagnostics — without writing custom MCP server code for every backend.
 
 ---
 
-## Architecture
+## The Problem
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  MCP Client (SampleAgentClient)                                  │
-│  • Entra JWT (aud = mcp-gateway-audience)                        │
-│  • Ocp-Apim-Subscription-Key                                     │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │ HTTPS / Streamable HTTP
-                         ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Azure API Management (Premium)                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │  Shared policy fragments                                   │  │
-│  │  • validate-entra-token  (inbound)                         │  │
-│  │  • rate-limit-per-subscription  (inbound)                  │  │
-│  │  • quota-per-subscription  (inbound)                       │  │
-│  │  • emit-tool-call-metric  (inbound)                        │  │
-│  │  • sse-hygiene  (backend — buffer-response=false)          │  │
-│  │  • mcp-error-handling  (on-error — JSON-RPC shaped)        │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  Pattern 1: REST-as-MCP          Pattern 2: Governed MCP server  │
-│  APIM synthesises MCP from       APIM governs an existing .NET   │
-│  a managed REST API.             MCP server.                     │
-│  No custom server code.          Credential abstraction.         │
-└────────┬─────────────────────────────────┬────────────────────────┘
-         │ Managed Identity                │ Managed Identity
-         ▼                                 ▼
-┌──────────────────┐             ┌──────────────────────────────┐
-│  SampleRestApi   │             │  SampleMcpServer             │
-│  .NET 9 REST API │◄────────────│  .NET 9, MCP StreamableHttp  │
-│  (ACA)           │             │  (ACA)                       │
-└──────────────────┘             └──────────────────────────────┘
-```
+MCP clients (AI agents, copilots, IDE extensions) need to call tools on your backend services. You want:
 
-### Transport
+- **Centralised auth** — clients authenticate once at the gateway, not per-backend.
+- **Credential abstraction** — clients never hold backend API keys or service credentials.
+- **Rate limiting and quota** — per-subscription, independently tunable per MCP server.
+- **Observability** — structured tool call metrics and logs without touching backend code.
+- **Streaming integrity** — SSE and Streamable HTTP streams must not be buffered or broken by the gateway.
 
-Streamable HTTP is the default transport.  The HTTP+SSE transport was deprecated in the MCP specification in mid-2025 and should not be used for new deployments.
-
-### Authorisation unit
-
-Each MCP server is one APIM **Product**.  Callers present a product subscription key (`Ocp-Apim-Subscription-Key`) alongside their Entra JWT.
-
-> **Note — APIM Workspaces:** Workspaces do not yet support MCP.  Until MCP support reaches GA in Workspaces, Products are the correct unit of authorisation and isolation.
+APIM Premium provides all of this. The non-obvious part is the configuration — a handful of settings in the wrong place silently breaks streaming forever. This reference implementation gets them right.
 
 ---
 
-## Trust boundaries
+## Two Patterns
 
-| Boundary | Mechanism |
-|---|---|
-| Client → APIM | Entra JWT (audience-pinned) + product subscription key |
-| APIM → SampleRestApi | Managed Identity token |
-| APIM → SampleMcpServer | Managed Identity token (credential abstraction — client never sees this) |
-| Backend ingress | Private endpoint or IP allowlist — accepts traffic from APIM only |
+```
+Pattern 1: REST-as-MCP
+─────────────────────
+MCP Client ──► APIM ──► (synthesises MCP) ──► SampleRestApi
+              │
+              └── imports OpenAPI spec, generates tool manifest,
+                  marshals JSON-RPC tool calls to REST operations
+
+Pattern 2: Govern Existing MCP Server
+──────────────────────────────────────
+MCP Client ──► APIM ──► SampleMcpServer (.NET 9) ──► SampleRestApi
+              │          (Streamable HTTP, MCP-native)
+              │
+              └── adds Entra auth, rate limiting, quota, metrics
+                  without changing MCP server source code
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Azure API Management (Premium)                    │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ Policy Pipeline (all requests)                               │   │
+│  │  validate-entra-token → rate-limit → quota → emit-metric     │   │
+│  │  → [pattern-specific backend auth] → sse-hygiene             │   │
+│  │  on-error: mcp-error-handling                                │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  Pattern 1 Product          Pattern 2 Product                        │
+│  sample-rest-api            sample-mcp-server                        │
+│       │                          │                                   │
+│       ▼                          ▼                                   │
+│  API: sample-rest-api       API: sample-mcp-server                   │
+│  (OpenAPI import)           (pass-through)                           │
+│       │                          │                                   │
+│       │ KV-backed named value    │ Managed Identity token            │
+│       ▼                          ▼                                   │
+└───────┼──────────────────────────┼───────────────────────────────────┘
+        │                          │
+        ▼                          ▼
+  SampleRestApi            SampleMcpServer (.NET 9)
+  (Container Apps)          (Container Apps)
+                                   │
+                                   ▼
+                             SampleRestApi
+                             (Container Apps)
+```
 
 ---
 
-## Repository structure
+## Trust Boundaries
 
-```
-apim-mcp/
-├── infra/terraform/
-│   ├── providers.tf              # azurerm >= 4.0, azapi, time
-│   ├── main.tf                   # Named values + module composition
-│   ├── variables.tf
-│   ├── outputs.tf
-│   └── modules/
-│       ├── apim-shared-policy-fragments/
-│       │   ├── main.tf           # azurerm_api_management_policy_fragment × 6
-│       │   ├── variables.tf
-│       │   ├── outputs.tf
-│       │   └── policies/
-│       │       ├── validate-entra-token.xml
-│       │       ├── sse-hygiene.xml
-│       │       ├── rate-limit-per-subscription.xml
-│       │       ├── quota-per-subscription.xml
-│       │       ├── emit-tool-call-metric.xml
-│       │       └── mcp-error-handling.xml
-│       ├── apim-rest-as-mcp/     # Pattern 1
-│       │   ├── main.tf
-│       │   ├── variables.tf
-│       │   └── outputs.tf
-│       └── apim-govern-mcp-server/  # Pattern 2
-│           ├── main.tf
-│           ├── variables.tf
-│           └── outputs.tf
-└── src/
-    ├── apim-mcp.sln
-    ├── SampleRestApi/            # .NET 9 incident management REST API
-    ├── SampleMcpServer/          # .NET 9 MCP server (StreamableHttp)
-    └── SampleAgentClient/        # .NET 9 E2E proof through APIM gateway
-```
+| Boundary | Mechanism | Notes |
+|----------|-----------|-------|
+| MCP Client → APIM | Entra JWT (audience-pinned) + APIM subscription key | Both required. JWT validates identity and scope; subscription key gates product access. |
+| APIM → SampleRestApi (Pattern 1) | Key Vault-backed named value injected as header | Client never sees the backend API key. Rotated in Key Vault without Terraform apply. |
+| APIM → SampleMcpServer (Pattern 2) | APIM-acquired Managed Identity token | APIM system identity acquires a token for the backend app registration. Backend validates it. |
+| SampleMcpServer → SampleRestApi | Direct HTTP (internal Container Apps network) | No auth — enforced via private/internal ingress, not credentials. |
+| Backend isolation | Container Apps ingress restrictions | Both backends must accept connections from APIM only (IP allowlist or internal ingress). |
+
+---
+
+## Limitations
+
+| Limitation | Detail |
+|------------|--------|
+| APIM Workspaces do not support MCP | The `mcpServers` resource is a service-level resource only. Products are used as the isolation boundary. See [ADR 0003](docs/adr/0003-product-as-authorisation-unit.md). |
+| Consumption tier incompatible | MCP requires long-running connections. Consumption tier has a 30-second request timeout and no persistent connection support. |
+| `azapi_resource` for mcpServers disabled by default | `count = 0` in both modules. Set to `1` after verifying your APIM instance's API version supports the `2025-05-01-preview` resource type. See [ADR 0002](docs/adr/0002-azapi-for-mcp-control-plane.md). |
+| `schema_validation_enabled = false` on azapi mcpServers | The resource type is not yet in the azapi 2.9.0 embedded schema. Remove this flag when the resource reaches GA. |
+| Keep-alive required | Azure Load Balancer drops idle TCP connections after 4 minutes. SampleMcpServer's `KeepAliveService` pings every 2 minutes. See [docs/03-sse-gotchas.md](docs/03-sse-gotchas.md#4-azure-load-balancer-4-minute-idle-timeout). |
 
 ---
 
 ## Prerequisites
 
-- Azure subscription with an existing **APIM Premium** instance
-  - Consumption tier is incompatible — MCP requires long-running connections
+- Azure subscription with an existing APIM **Premium** instance
 - Terraform >= 1.7
-- Azure CLI authenticated (`az login`)
-- .NET 9 SDK (for `src/` projects)
+- .NET 9 SDK
+- Azure CLI (for initial auth: `az login`)
+- Key Vault with a secret for the SampleRestApi backend credential (Pattern 1)
+- Entra app registration for the APIM gateway audience
+- Entra app registration for the SampleMcpServer backend (Pattern 2)
 
 ---
 
-## Quickstart
+## Quick Start
 
-### 1. Configure named values
-
-Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in:
-
-```hcl
-api_management_name   = "my-apim"
-resource_group_name   = "my-rg"
-tenant_id             = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-mcp_gateway_audience  = "api://my-mcp-gateway"
-sample_rest_api_url   = "https://sample-rest-api.myaca.azurecontainerapps.io"
-sample_mcp_server_url = "https://sample-mcp-server.myaca.azurecontainerapps.io"
-```
-
-### 2. Deploy infrastructure
+### 1. Infrastructure
 
 ```bash
-cd infra/terraform
-terraform init
+cd infra/terraform/envs/dev
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars — fill in your APIM name, resource group, Key Vault IDs, etc.
+
+terraform init \
+  -backend-config="storage_account_name=<sa>" \
+  -backend-config="container_name=tfstate" \
+  -backend-config="key=apim-mcp/dev/terraform.tfstate" \
+  -backend-config="resource_group_name=<rg>"
+
 terraform plan
 terraform apply
 ```
 
-> Named value propagation: Terraform applies a 120 s sleep after creating named values before activating policy fragments.  This is intentional — do not remove it.
-
-### 3. Run the E2E proof
+### 2. SampleRestApi
 
 ```bash
-cd src
-dotnet run --project SampleRestApi &
-dotnet run --project SampleMcpServer &
-dotnet run --project SampleAgentClient
+cd src/SampleRestApi
+dotnet run
+# API available at https://localhost:7xxx
+# OpenAPI spec at https://localhost:7xxx/openapi/v1.json
+# Scalar UI at https://localhost:7xxx/scalar
+```
+
+### 3. SampleMcpServer
+
+```bash
+cd src/SampleMcpServer
+export RestApi__BaseUrl=https://localhost:7xxx
+dotnet run
+# MCP endpoint at http://localhost:5xxx/mcp
+```
+
+### 4. SampleAgentClient
+
+```bash
+cd src/SampleAgentClient
+export APIM_GATEWAY_URL=https://my-apim.azure-api.net
+export APIM_BEARER_TOKEN=<entra-bearer-token>
+export APIM_SUBSCRIPTION_KEY=<product-subscription-key>
+
+dotnet run -- --pattern rest-as-mcp
+dotnet run -- --pattern existing-mcp
 ```
 
 ---
 
-## Policy fragments
+## Repository Structure
+
+```
+apim-mcp/
+├── infra/terraform/
+│   ├── modules/
+│   │   ├── apim-shared-policy-fragments/  # 6 policy fragments, time_sleep propagation
+│   │   ├── apim-diagnostics/              # App Insights + Azure Monitor, body_bytes=0
+│   │   ├── apim-mcp-from-rest/            # Pattern 1: REST-as-MCP
+│   │   └── apim-mcp-from-existing/        # Pattern 2: Govern existing MCP server
+│   └── envs/dev/                          # Root module — wires everything together
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+│       ├── providers.tf                   # use_oidc = true for CI/CD
+│       ├── backend.tf                     # Azure Blob Storage remote state
+│       └── terraform.tfvars.example
+├── src/
+│   ├── SampleRestApi/                     # .NET 9 minimal API — incident management
+│   ├── SampleMcpServer/                   # .NET 9 MCP server — wraps SampleRestApi
+│   └── SampleAgentClient/                 # .NET 9 console — proves E2E via APIM
+├── docs/
+│   ├── adr/                               # Architecture Decision Records
+│   └── 03-sse-gotchas.md                  # SSE/Streamable HTTP failure mode checklist
+└── .github/workflows/
+    ├── terraform-validate.yml             # PR: fmt check + validate all modules
+    └── dotnet-build.yml                   # PR: build all .NET projects
+```
+
+---
+
+## Policy Fragments
+
+Six shared fragments are deployed by the `apim-shared-policy-fragments` module and included in every MCP API policy via `<include-fragment />`. Order within `<inbound>` is significant.
 
 | Fragment | Section | Purpose |
-|---|---|---|
-| `validate-entra-token` | inbound | Validates Entra JWT; sets `caller-object-id`, `caller-tenant-id`, `caller-app-id` context variables |
-| `rate-limit-per-subscription` | inbound | Short-window burst control; key precedence: sub key → OID → IP |
-| `quota-per-subscription` | inbound | Long-window budget cap; replicated across regions in multi-region Premium |
-| `emit-tool-call-metric` | inbound | Custom Azure Monitor metric per tool call with caller dimensions |
-| `sse-hygiene` | backend | `forward-request` with `buffer-response="false"` — mandatory for SSE/StreamableHttp |
-| `mcp-error-handling` | on-error | JSON-RPC 2.0 shaped errors; includes `WWW-Authenticate: Bearer resource_metadata=...` on 401 |
-
-### Fragment ordering (inbound)
-
-```
-base → validate-entra-token → rate-limit-per-subscription → quota-per-subscription → emit-tool-call-metric
-```
-
-`validate-entra-token` must run first — subsequent fragments read `caller-object-id` and `caller-app-id` from context variables it sets.
+|----------|---------|---------|
+| `validate-entra-token` | `<inbound>` | Validates Entra JWT (v1/v2 issuers). Sets `caller-object-id`, `caller-app-id`, `caller-tenant-id` context variables. |
+| `rate-limit-per-subscription` | `<inbound>` | `rate-limit-by-key` per subscription key. Sets `X-RateLimit-*` response headers. |
+| `quota-per-subscription` | `<inbound>` | `quota-by-key` per subscription key. Long-window budget cap. |
+| `emit-tool-call-metric` | `<inbound>` | Emits `mcp-tool-call` custom metric with caller dimensions. |
+| `sse-hygiene` | `<backend>` | `<forward-request buffer-response="false" timeout="600" />`. Mandatory for streaming. |
+| `mcp-error-handling` | `<on-error>` | JSON-RPC 2.0 error envelope. `WWW-Authenticate` with `resource_metadata` on 401 for MCP OAuth discovery. |
 
 ---
 
-## Key gotchas
+## Named Values
 
-| Gotcha | Impact |
-|---|---|
-| `buffer-response="false"` is missing | SSE stream is buffered and held until the backend closes; the MCP client hangs |
-| `validate-jwt` used instead of `validate-azure-ad-token` | v2.0 tokens from multi-tenant apps fail issuer validation |
-| `appid`/`azp` claim not handled with fallback | App-only (v1.0) or delegated (v2.0) tokens fail caller-app-id resolution |
-| `&&` written as `&&` in policy XML | XML parse error at deploy time |
-| Named values applied before time_sleep | Policy activation fails with "named value not found" on first deploy |
-| `context.Response.Body` read in MCP-scoped policy | Triggers response buffering; breaks streaming |
-| Rate limit counters misread as global | `rate-limit-by-key` is per-region in multi-region Premium; use `quota-by-key` for global budgets |
+All named values are created by the `envs/dev` root module. Policy fragments reference them by name.
 
----
-
-## Named values reference
-
-| Named value | Type | Description |
-|---|---|---|
-| `mcp-gateway-tenant-id` | Direct | Azure AD tenant ID |
-| `mcp-gateway-audience` | Direct | Token audience (app URI or client ID) |
-| `mcp-required-scope` | Direct | Scope callers must present |
-| `mcp-rate-limit-calls` | Direct (int) | Call budget per rate-limit window |
-| `mcp-rate-limit-period-seconds` | Direct (int) | Rate-limit window in seconds |
-| `mcp-quota-calls` | Direct (int) | Long-window call budget |
-| `mcp-quota-period-seconds` | Direct (int) | Quota window in seconds |
-
-For production deployments, migrate `mcp-gateway-tenant-id` and `mcp-gateway-audience` to Key Vault-backed named values.
+| Named Value | Type | Used By |
+|-------------|------|---------|
+| `mcp-gateway-tenant-id` | Direct | `validate-entra-token` |
+| `mcp-gateway-audience` | Direct | `validate-entra-token` |
+| `mcp-required-scope` | Direct | `validate-entra-token` |
+| `mcp-rate-limit-calls` | Direct | `rate-limit-per-subscription` |
+| `mcp-rate-limit-period-seconds` | Direct | `rate-limit-per-subscription` |
+| `mcp-quota-calls` | Direct | `quota-per-subscription` |
+| `mcp-quota-period-seconds` | Direct | `quota-per-subscription` |
+| `{api-name}-backend-credential` | KV-backed, secret | Pattern 1 only |
 
 ---
 
-## Enterprise adaptation guide
+## Architecture Decision Records
 
-### Multi-region Premium
+- [ADR 0001 — Streamable HTTP as default transport](docs/adr/0001-streamable-http-default.md)
+- [ADR 0002 — azapi for MCP control plane resources](docs/adr/0002-azapi-for-mcp-control-plane.md)
+- [ADR 0003 — APIM Product as MCP server authorisation unit](docs/adr/0003-product-as-authorisation-unit.md)
+- [ADR 0004 — No LLM token limit on MCP traffic](docs/adr/0004-no-llm-token-limit-on-mcp-traffic.md)
 
-- Increase `time_sleep.named_values_propagation.create_duration` to `"180s"`.
-- `rate-limit-by-key` counters are **per-region** — each region enforces the full limit independently.  Use `quota-by-key` for aggregate cross-region budgets.
+---
 
-### Credential abstraction for Pattern 2
+## Enterprise Adaptation Guide
 
-The `apim-govern-mcp-server` module uses a named value placeholder `{{mcp-backend-mi-token}}` for the backend Authorization header.  Replace this with an `authentication-managed-identity` policy block and set the backend resource URI to the SampleMcpServer's Entra app registration.
-
-### Multiple MCP servers
-
-Deploy one `apim-rest-as-mcp` or `apim-govern-mcp-server` module call per server.  Each gets its own APIM Product, API, and policy set.  The shared fragments are deployed once and referenced by all.
-
-### MCP dynamic discovery (OAuth 2.0)
-
-The `mcp-error-handling` fragment returns `WWW-Authenticate: Bearer resource_metadata="https://{host}/.well-known/oauth-protected-resource"` on 401 responses.  Configure the `/.well-known/oauth-protected-resource` endpoint on your APIM custom domain (or a redirect) to return an [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728) protected resource metadata document pointing to your Entra authorization server.
-
-### MCP control plane (azapi)
-
-There is no native `azurerm_api_management_mcp_server` resource in azurerm as of azurerm 4.x.  Both pattern modules include a commented `azapi_resource` block for registering MCP servers via the APIM REST API (`Microsoft.ApiManagement/service/mcpServers`).  Uncomment and configure when the API version stabilises or when azurerm adds native support.
+| Requirement | Adaptation |
+|-------------|-----------|
+| **Multiple MCP servers** | Add one `module "..."` block in `envs/dev/main.tf` per server, pointing to `apim-mcp-from-rest` or `apim-mcp-from-existing`. Each gets its own Product and subscription key space. |
+| **Tighter rate limits for production** | Override `rate_limit_calls`, `rate_limit_period_seconds`, `quota_calls`, `quota_period_seconds` in `terraform.tfvars` per environment. |
+| **Per-API rate limits** | Move the rate-limit fragment invocation from the shared module into the per-API policy and add API-specific named values for the thresholds. |
+| **Multi-region APIM** | `rate-limit-by-key` counters are per-region. Use `quota-by-key` (cross-region replication) for hard global budgets. See [ADR 0004](docs/adr/0004-no-llm-token-limit-on-mcp-traffic.md). |
+| **Private connectivity** | Add a private endpoint for APIM and configure Container Apps internal ingress. The Terraform modules are not opinionated about network topology. |
+| **Workspace migration** | When APIM Workspace MCP support reaches GA, see [ADR 0003](docs/adr/0003-product-as-authorisation-unit.md) for the migration path. |
+| **Content auditing** | Route responses to Event Hub via `<log-to-eventhub>` with a separate logger. Do not increase `body_bytes` on the Application Insights diagnostic — this breaks streaming. |
+| **Custom tool credentials** | Add KV-backed named values for per-tool credentials. Inject them in the API policy using the same `{{named-value-name}}` pattern as Pattern 1. |
