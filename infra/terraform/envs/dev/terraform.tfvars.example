@@ -1,0 +1,64 @@
+# terraform.tfvars.example
+# Copy to terraform.tfvars and fill in real values.
+# DO NOT commit terraform.tfvars — it may contain sensitive values.
+# Use CI secrets or Azure Key Vault data sources for sensitive inputs.
+
+# ── Existing infrastructure ───────────────────────────────────────────────────
+
+# Name of the existing APIM Premium instance
+api_management_name = "my-apim-instance"
+
+# Resource group containing the APIM instance
+resource_group_name = "rg-apim-mcp-dev"
+
+# ── Application Insights ──────────────────────────────────────────────────────
+
+application_insights_id   = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Insights/components/<name>"
+application_insights_name = "my-app-insights"
+
+# Supply via TF_VAR_application_insights_instrumentation_key environment variable
+# rather than hard-coding here.
+application_insights_instrumentation_key = ""
+
+# ── Key Vault ─────────────────────────────────────────────────────────────────
+
+key_vault_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.KeyVault/vaults/<name>"
+
+# Client ID of the user-assigned managed identity with Key Vault Secrets User role
+apim_user_assigned_identity_client_id = "00000000-0000-0000-0000-000000000000"
+
+# ── Pattern 1: REST-as-MCP ────────────────────────────────────────────────────
+
+# Container Apps URL of the SampleRestApi deployment
+sample_rest_api_url = "https://sample-rest-api.internal.example.com"
+
+# If blank, defaults to <sample_rest_api_url>/openapi/v1.json
+sample_rest_api_openapi_url = ""
+
+# Key Vault secret ID for the backend API key (use "" if the backend needs no key)
+sample_rest_api_credential_secret_id = "https://<vault>.vault.azure.net/secrets/sample-rest-api-key"
+
+# ── Pattern 2: Govern existing MCP server ─────────────────────────────────────
+
+# Container Apps URL of the SampleMcpServer deployment
+sample_mcp_server_url = "https://sample-mcp-server.internal.example.com"
+
+# Entra Application ID URI — APIM acquires a managed-identity token for this audience
+sample_mcp_server_entra_resource_id = "api://sample-mcp-server"
+
+# ── Authorisation ─────────────────────────────────────────────────────────────
+
+entra_tenant_id = "00000000-0000-0000-0000-000000000000"
+
+# Application ID URI of the APIM gateway app registration
+gateway_audience = "api://my-apim-gateway"
+
+# OAuth 2.0 scope clients must hold
+required_scope = "mcp.tools"
+
+# ── Rate limiting / quota (dev — permissive defaults) ─────────────────────────
+
+rate_limit_calls          = 100
+rate_limit_period_seconds = 60
+quota_calls               = 10000
+quota_period_seconds      = 86400
