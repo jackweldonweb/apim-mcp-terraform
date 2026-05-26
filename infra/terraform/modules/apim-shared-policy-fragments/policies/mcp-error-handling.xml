@@ -1,0 +1,87 @@
+<!--
+  mcp-error-handling
+  On-error fragment — place inside <on-error> via <include-fragment fragment-id="mcp-error-handling" />
+
+  Returns JSON-RPC 2.0 shaped error responses for all APIM error conditions.
+  Error code mapping (server-error range -32000 to -32099):
+    -32001  Unauthorized      (HTTP 401) — token missing, invalid, or expired
+    -32002  Forbidden         (HTTP 403) — token valid but scope/role insufficient
+    -32029  Too Many Requests (HTTP 429) — rate limit or quota exceeded
+    -32000  Internal Error    (HTTP 500) — catch-all
+
+  IMPORTANT — 401 response MUST include WWW-Authenticate with resource_metadata.
+  MCP clients implementing OAuth 2.0 dynamic discovery (RFC 9728 / draft-ietf-oauth-
+  resource-metadata) read this header to locate the Authorization Server.  Without
+  it, clients that attempt token acquisition via MCP dynamic discovery will fail
+  silently with no useful error.
+
+  The resource_metadata URL points to /.well-known/oauth-protected-resource on
+  the same host as the APIM gateway.  Configure that endpoint (or a redirect) to
+  return the protected resource metadata document.
+
+  Do NOT read context.Response.Body anywhere in this fragment — that triggers
+  response buffering and breaks any in-flight SSE stream.
+-->
+<fragment>
+  <!-- Normalize Content-Type once at the top rather than repeating in every branch -->
+  <set-header name="Content-Type" exists-action="override">
+    <value>application/json</value>
+  </set-header>
+
+  <choose>
+    <!-- 401: authentication failure from validate-azure-ad-token or upstream 401 -->
+    <when condition="@(context.LastError?.Source == &quot;validate-azure-ad-token&quot; || context.Response?.StatusCode == 401)">
+      <set-header name="WWW-Authenticate" exists-action="override">
+        <value>@{
+          var scheme = context.Request.OriginalUrl.Scheme;
+          var host   = context.Request.OriginalUrl.Host;
+          return "Bearer resource_metadata=\"" + scheme + "://" + host + "/.well-known/oauth-protected-resource\"";
+        }</value>
+      </set-header>
+      <return-response>
+        <set-status code="401" reason="Unauthorized" />
+        <set-header name="Content-Type" exists-action="override">
+          <value>application/json</value>
+        </set-header>
+        <set-body template="none">{"jsonrpc":"2.0","error":{"code":-32001,"message":"Unauthorized: valid Entra bearer token required"},"id":null}</set-body>
+      </return-response>
+    </when>
+
+    <!-- 403: token valid but scope/role check failed -->
+    <when condition="@(context.Response?.StatusCode == 403)">
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-header name="Content-Type" exists-action="override">
+          <value>application/json</value>
+        </set-header>
+        <set-body template="none">{"jsonrpc":"2.0","error":{"code":-32002,"message":"Forbidden: required scope not present in token"},"id":null}</set-body>
+      </return-response>
+    </when>
+
+    <!-- 429: rate-limit-by-key or quota-by-key threshold exceeded -->
+    <when condition="@(context.LastError?.Source == &quot;rate-limit-by-key&quot; || context.LastError?.Source == &quot;quota-by-key&quot; || context.Response?.StatusCode == 429)">
+      <return-response>
+        <set-status code="429" reason="Too Many Requests" />
+        <set-header name="Content-Type" exists-action="override">
+          <value>application/json</value>
+        </set-header>
+        <set-body template="none">{"jsonrpc":"2.0","error":{"code":-32029,"message":"Too many requests: rate limit or quota exceeded"},"id":null}</set-body>
+      </return-response>
+    </when>
+
+    <!-- catch-all: sanitise error message before embedding in JSON to prevent injection -->
+    <otherwise>
+      <return-response>
+        <set-status code="500" reason="Internal Server Error" />
+        <set-header name="Content-Type" exists-action="override">
+          <value>application/json</value>
+        </set-header>
+        <set-body>@{
+  var msg = context.LastError?.Message ?? "An internal error occurred";
+  msg = msg.Replace("\\", "\\\\").Replace("\"", "\\\"");
+  return "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"" + msg + "\"},\"id\":null}";
+        }</set-body>
+      </return-response>
+    </otherwise>
+  </choose>
+</fragment>

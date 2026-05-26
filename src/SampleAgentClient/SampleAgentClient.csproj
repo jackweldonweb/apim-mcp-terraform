@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SampleAgentClient</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MCP client — connects to APIM gateway endpoint -->
+    <PackageReference Include="ModelContextProtocol" Version="0.2.*" />
+    <!-- AI SDK for agentic loop — uses MCP tools via APIM -->
+    <PackageReference Include="Microsoft.Extensions.AI.Anthropic" Version="9.*" />
+    <!-- Entra token acquisition for APIM JWT requirement -->
+    <PackageReference Include="Azure.Identity" Version="1.*" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.*" />
+  </ItemGroup>
+
+</Project>

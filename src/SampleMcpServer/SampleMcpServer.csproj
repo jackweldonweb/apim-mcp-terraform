@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SampleMcpServer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MCP Streamable HTTP transport — SSE deprecated mid-2025, use StreamableHttp -->
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.2.*" />
+    <!-- REST client for SampleRestApi backend calls -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="9.*" />
+    <!-- Entra authentication for APIM→SampleMcpServer Managed Identity calls -->
+    <PackageReference Include="Azure.Identity" Version="1.*" />
+  </ItemGroup>
+
+</Project>

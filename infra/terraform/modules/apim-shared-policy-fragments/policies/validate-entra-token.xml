@@ -1,0 +1,65 @@
+<!--
+  validate-entra-token
+  Inbound fragment — place inside <inbound> via <include-fragment fragment-id="validate-entra-token" />
+
+  Validates the Entra bearer token using validate-azure-ad-token (handles v2.0 multi-tenant
+  issuers correctly; do NOT substitute validate-jwt here).  Surfaces three context variables
+  for use by downstream fragments:
+    caller-object-id  — oid claim (user or service principal object ID in home tenant)
+    caller-tenant-id  — tid claim (issuing tenant)
+    caller-app-id     — azp (v2.0) with fallback to appid (v1.0 app-only tokens)
+
+  Required named values:
+    mcp-gateway-tenant-id  — Azure AD tenant ID
+    mcp-gateway-audience   — App URI or client ID pinned as audience
+    mcp-required-scope     — Scope that caller must present (scp for delegated, roles for app)
+-->
+<fragment>
+  <validate-azure-ad-token
+    tenant-id="{{mcp-gateway-tenant-id}}"
+    header-name="Authorization"
+    failed-validation-httpcode="401"
+    failed-validation-error-message="Unauthorized: valid Entra bearer token required"
+    require-expiration-time="true"
+    require-scheme="Bearer"
+    require-signed-tokens="true"
+    output-token-variable-name="jwt">
+    <audiences>
+      <audience>{{mcp-gateway-audience}}</audience>
+    </audiences>
+  </validate-azure-ad-token>
+
+  <set-variable
+    name="caller-object-id"
+    value="@(((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;oid&quot;, &quot;unknown&quot;))" />
+
+  <set-variable
+    name="caller-tenant-id"
+    value="@(((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;tid&quot;, &quot;unknown&quot;))" />
+
+  <!-- azp = v2.0 delegated or confidential-client app token; appid = v1.0 app-only token -->
+  <set-variable
+    name="caller-app-id"
+    value="@(((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;azp&quot;, ((Jwt)context.Variables[&quot;jwt&quot;]).Claims.GetValueOrDefault(&quot;appid&quot;, &quot;unknown&quot;)))" />
+
+  <!-- Check scp (delegated) and roles (app permissions) against the required scope -->
+  <set-variable name="caller-has-required-scope" value="@{
+    var jwt = (Jwt)context.Variables[&quot;jwt&quot;];
+    var scp   = jwt.Claims.GetValueOrDefault(&quot;scp&quot;,   string.Empty);
+    var roles = jwt.Claims.GetValueOrDefault(&quot;roles&quot;, string.Empty);
+    var required = &quot;{{mcp-required-scope}}&quot;;
+    return scp.Split(' ').Contains(required) || roles.Split(' ').Contains(required);
+  }" />
+
+  <choose>
+    <when condition="@(!(bool)context.Variables[&quot;caller-has-required-scope&quot;])">
+      <return-response>
+        <set-status code="403" reason="Forbidden" />
+        <set-header name="Content-Type" exists-action="override">
+          <value>application/json</value>
+        </set-header>
+        <set-body template="none">{"jsonrpc":"2.0","error":{"code":-32002,"message":"Forbidden: required scope not present in token"},"id":null}</set-body>
+      </return-response>
+    </when>
+  </choose>
+</fragment>

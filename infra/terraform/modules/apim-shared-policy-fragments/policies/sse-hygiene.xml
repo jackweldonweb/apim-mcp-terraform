@@ -1,0 +1,21 @@
+<!--
+  sse-hygiene
+  Backend fragment — place inside <backend> via <include-fragment fragment-id="sse-hygiene" />
+
+  CRITICAL: buffer-response="false" is mandatory for Streamable HTTP / SSE transport.
+  Any buffering breaks the streaming connection entirely — APIM will hold the entire
+  response before forwarding, which kills long-running tool-call streams.
+
+  timeout="600" supports long-running MCP sessions (10 min). Tune per SLA.
+  fail-on-error-status-code="false" prevents APIM from converting backend 4xx/5xx
+  into its own error responses, preserving the JSON-RPC error body from the backend.
+
+  Do NOT add a <return-response> or any response-reading policy in this section.
+  Reading context.Response.Body here triggers buffering and breaks the stream.
+-->
+<fragment>
+  <forward-request
+    timeout="600"
+    buffer-response="false"
+    fail-on-error-status-code="false" />
+</fragment>

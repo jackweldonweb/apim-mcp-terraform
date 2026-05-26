@@ -1,0 +1,33 @@
+<!--
+  quota-per-subscription
+  Inbound fragment — place inside <inbound> AFTER validate-entra-token.
+  Use alongside rate-limit-per-subscription: rate limiting handles short-window
+  burst control; this fragment handles the long-window budget cap.
+
+  quota-by-key replicates its counter across all regions in a multi-region
+  Premium deployment, making it suitable for aggregate budget enforcement
+  where rate-limit-by-key (per-region) is not sufficient.
+
+  Key precedence mirrors rate-limit-per-subscription:
+    1. Subscription key  — product subscription
+    2. Caller OID        — Entra object ID
+    3. Client IP         — last-resort fallback
+
+  Required named values:
+    mcp-quota-calls           — total call budget per renewal window (integer)
+    mcp-quota-period-seconds  — renewal window in seconds (integer)
+                                e.g. 604800 = 7 days, 2592000 = 30 days
+-->
+<fragment>
+  <set-variable name="quota-counter-key" value="@{
+    if (context.Subscription?.Key != null) return context.Subscription.Key;
+    var oid = (string)context.Variables.GetValueOrDefault(&quot;caller-object-id&quot;, string.Empty);
+    return !string.IsNullOrEmpty(oid) &amp;&amp; oid != &quot;unknown&quot; ? oid : context.Request.IpAddress;
+  }" />
+
+  <quota-by-key
+    calls="{{mcp-quota-calls}}"
+    renewal-period="{{mcp-quota-period-seconds}}"
+    counter-key="@((string)context.Variables[&quot;quota-counter-key&quot;])"
+    increment-condition="@(context.Response.StatusCode < 500)" />
+</fragment>

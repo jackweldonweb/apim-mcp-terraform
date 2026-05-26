@@ -1,0 +1,39 @@
+<!--
+  rate-limit-per-subscription
+  Inbound fragment — place inside <inbound> AFTER validate-entra-token so that
+  caller-object-id context variable is already set.
+
+  Key precedence (most-to-least specific):
+    1. Subscription key  — product subscription (preferred; per-product isolation)
+    2. Caller OID        — Entra object ID when no sub key is present
+    3. Client IP         — last-resort fallback
+
+  increment-condition excludes 5xx backend errors from consumption to avoid
+  penalising callers for transient backend faults.
+
+  X-RateLimit-* response headers surface limit state to MCP clients.
+
+  NOTE: In multi-region Premium deployments, rate-limit-by-key counters are
+  per-region — each region enforces the full limit independently.  For a
+  global counter, use quota-by-key (replicates across regions) instead.
+
+  Required named values:
+    mcp-rate-limit-calls           — call budget per renewal window (integer)
+    mcp-rate-limit-period-seconds  — renewal window in seconds (integer)
+-->
+<fragment>
+  <set-variable name="rl-counter-key" value="@{
+    if (context.Subscription?.Key != null) return context.Subscription.Key;
+    var oid = (string)context.Variables.GetValueOrDefault(&quot;caller-object-id&quot;, string.Empty);
+    return !string.IsNullOrEmpty(oid) &amp;&amp; oid != &quot;unknown&quot; ? oid : context.Request.IpAddress;
+  }" />
+
+  <rate-limit-by-key
+    calls="{{mcp-rate-limit-calls}}"
+    renewal-period="{{mcp-rate-limit-period-seconds}}"
+    counter-key="@((string)context.Variables[&quot;rl-counter-key&quot;])"
+    increment-condition="@(context.Response.StatusCode < 500)"
+    remaining-calls-header-name="X-RateLimit-Remaining"
+    total-calls-header-name="X-RateLimit-Limit"
+    retry-after-header-name="X-RateLimit-Reset" />
+</fragment>

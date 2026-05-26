@@ -1,0 +1,34 @@
+<!--
+  emit-tool-call-metric
+  Inbound fragment — place inside <inbound> AFTER validate-entra-token so that
+  caller identity context variables are populated.
+
+  Emits a custom Azure Monitor metric (emit-metric) for every inbound MCP tool
+  call request with caller identity dimensions.  This enables per-caller,
+  per-API, and per-operation cost attribution in Application Insights / Monitor.
+
+  Do NOT substitute azure-openai-emit-token-metric here — that policy parses
+  LLM usage blocks from OpenAI-shaped responses and is not applicable to MCP
+  tool call traffic.
+
+  Dimensions are purposely kept to what is reliably available at inbound time.
+  Do NOT add a response-status dimension here; doing so would require moving
+  this fragment to outbound, which risks reading context.Response.Body and
+  triggering buffering on streaming responses.
+-->
+<fragment>
+  <emit-metric name="mcp-tool-call" value="1" namespace="mcp-gateway">
+    <dimension name="subscription-id"
+      value="@(context.Subscription?.Id ?? &quot;none&quot;)" />
+    <dimension name="caller-oid"
+      value="@((string)context.Variables.GetValueOrDefault(&quot;caller-object-id&quot;, &quot;unknown&quot;))" />
+    <dimension name="caller-app-id"
+      value="@((string)context.Variables.GetValueOrDefault(&quot;caller-app-id&quot;, &quot;unknown&quot;))" />
+    <dimension name="caller-tenant-id"
+      value="@((string)context.Variables.GetValueOrDefault(&quot;caller-tenant-id&quot;, &quot;unknown&quot;))" />
+    <dimension name="api-id"
+      value="@(context.Api.Id)" />
+    <dimension name="operation-id"
+      value="@(context.Operation.Id)" />
+  </emit-metric>
+</fragment>
