@@ -2,6 +2,7 @@
 
 Production-ready reference implementation for exposing REST APIs and existing MCP servers through Azure API Management as governed Model Context Protocol endpoints. Built for enterprise architects who need Entra authentication, rate limiting, quota, credential abstraction, and streaming-safe diagnostics — without writing custom MCP server code for every backend.
 
+
 ---
 
 ## The Problem
@@ -242,3 +243,17 @@ All named values are created by the `envs/dev` root module. Policy fragments ref
 | **Workspace migration** | When APIM Workspace MCP support reaches GA, see [ADR 0003](docs/adr/0003-product-as-authorisation-unit.md) for the migration path. |
 | **Content auditing** | Route responses to Event Hub via `<log-to-eventhub>` with a separate logger. Do not increase `body_bytes` on the Application Insights diagnostic — this breaks streaming. |
 | **Custom tool credentials** | Add KV-backed named values for per-tool credentials. Inject them in the API policy using the same `{{named-value-name}}` pattern as Pattern 1. |
+
+
+
+## When you need more than this gives you
+This repo covers governing access to your own systems via the gateway you already own. It's the right pattern when you're exposing internal REST APIs and MCP servers to agents and you want to do that on infrastructure your security team has already approved.
+What it doesn't give you:
+
+Identity-resolved audit logs of every tool call (who, what, with what arguments)
+Regex-based argument masking before requests leave your perimeter
+Per-identity, per-tool allow/deny policy without writing and maintaining APIM policy XML
+Aggregated audit across multiple MCP servers — including third-party servers you don't own
+
+If you need those, that's a different problem. It's what the [MCP Audit & Compliance Gateway](https://www.weldonweb.co.uk/product/mcp-audit) is for — an Azure Managed Application that deploys into your subscription (data never leaves), available on the Azure Marketplace with a permanent free tier up to 10,000 invocations/month.
+Use APIM to expose your systems to agents. Use the Audit Gateway to prove what those agents did.
